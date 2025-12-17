@@ -69,6 +69,9 @@ class DefaultAgent:
         self.model = model
         self.env = env
         self.extra_template_vars = {}
+        self.tool_call_count = 0
+        self.tool_error_count = 0
+        self.tool_latencies = []
 
     def render_template(self, template: str, **kwargs) -> str:
         template_vars = asdict(self.config) | self.env.get_template_vars() | self.model.get_template_vars()
@@ -96,7 +99,11 @@ class DefaultAgent:
 
     def step(self) -> dict:
         """Query the LM, execute the action, return the observation."""
-        return self.get_observation(self.query())
+        response = self.query()
+        print(f"\n\033[92m🤖 Agent Action:\033[0m\n{response['content']}\n")
+        output = self.get_observation(response)
+        print(f"\n\033[93m👁️ Observation:\033[0m\n{output.get('output', '')}\n")
+        return output
 
     def query(self) -> dict:
         """Query the model and return the response."""
@@ -121,15 +128,49 @@ class DefaultAgent:
         raise FormatError(self.render_template(self.config.format_error_template, actions=actions))
 
     def execute_action(self, action: dict) -> dict:
+        start_time = time.time()
+        print(f"\n\033[94mTOOL CALL\033[0m\n{action['action']}\n")  
+        is_error = False
         try:
             output = self.env.execute(action["action"])
+            print(f"\n\033[93mOUTPUT\033[0m\n{output.get('output', '')}\n")
         except (TimeoutError, subprocess.TimeoutExpired) as e:
             output = e.output.decode("utf-8", errors="replace") if getattr(e, "output", None) else ""
+            is_error = True
             raise ExecutionTimeoutError(
                 self.render_template(self.config.timeout_template, action=action, output=output)
             )
-        self.has_finished(output)
-        return output | {"action": action["action"]}
+        except Exception:
+            is_error = True
+            raise
+        else:
+            # Check return code for error if available in output dict
+            if isinstance(output, dict) and output.get("returncode", 0) != 0:
+                is_error = True
+            
+            try:
+                self.has_finished(output)
+            except Submitted:
+                # Submitted is a success
+                is_error = False
+                raise
+            except Exception:
+                is_error = True
+                raise
+
+            return output | {"action": action["action"]}
+        finally:
+            end_time = time.time()
+            latency = end_time - start_time
+            self.tool_call_count += 1
+            if is_error:
+                self.tool_error_count += 1
+            self.tool_latencies.append(latency)
+            
+            # Print Metric
+            status = "FAILED" if is_error else "SUCCESS"
+            color = "\033[91m" if is_error else "\033[94m" # Red if failed, Blue if success
+            print(f"\n{color}📊 Tool Metrics:\033[0m Status: {status}, Latency: {latency:.4f}s\n")
 
     def has_finished(self, output: dict[str, str]):
         """Raises Submitted exception with final output if the agent has finished its task."""

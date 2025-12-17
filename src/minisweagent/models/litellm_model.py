@@ -37,6 +37,9 @@ class LitellmModel:
         self.config = config_class(**kwargs)
         self.cost = 0.0
         self.n_calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.reasoning_tokens = 0
         if self.config.litellm_model_registry and Path(self.config.litellm_model_registry).is_file():
             litellm.utils.register_model(json.loads(Path(self.config.litellm_model_registry).read_text()))
 
@@ -87,9 +90,36 @@ class LitellmModel:
                 )
                 logger.critical(msg)
                 raise RuntimeError(msg) from e
+        
+        # Token tracking
+        input_tokens = 0
+        output_tokens = 0
+        reasoning_tokens = 0
+        if hasattr(response, "usage"):
+            input_tokens = getattr(response.usage, "prompt_tokens", 0)
+            output_tokens = getattr(response.usage, "completion_tokens", 0)
+            # Try to get reasoning tokens if available (e.g. DeepSeek or newer models)
+            if hasattr(response.usage, "completion_tokens_details"):
+                reasoning_tokens = getattr(response.usage.completion_tokens_details, "reasoning_tokens", 0)
+        
         self.n_calls += 1
         self.cost += cost
-        GLOBAL_MODEL_STATS.add(cost)
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.reasoning_tokens += reasoning_tokens
+        
+        GLOBAL_MODEL_STATS.add(
+            cost, 
+            input_tokens=input_tokens, 
+            output_tokens=output_tokens, 
+            reasoning_tokens=reasoning_tokens
+        )
+        
+        logger.info(
+            f"Call stats: Cost: ${cost:.4f}, Input: {input_tokens}, "
+            f"Output: {output_tokens}, Reasoning: {reasoning_tokens}"
+        )
+        
         return {
             "content": response.choices[0].message.content or "",  # type: ignore
             "extra": {
@@ -98,4 +128,10 @@ class LitellmModel:
         }
 
     def get_template_vars(self) -> dict[str, Any]:
-        return asdict(self.config) | {"n_model_calls": self.n_calls, "model_cost": self.cost}
+        return asdict(self.config) | {
+            "n_model_calls": self.n_calls, 
+            "model_cost": self.cost,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.input_tokens + self.output_tokens,
+        }

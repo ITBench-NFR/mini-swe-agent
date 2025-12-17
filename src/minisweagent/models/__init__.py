@@ -16,17 +16,29 @@ class GlobalModelStats:
     def __init__(self):
         self._cost = 0.0
         self._n_calls = 0
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._reasoning_tokens = 0
         self._lock = threading.Lock()
         self.cost_limit = float(os.getenv("MSWEA_GLOBAL_COST_LIMIT", "0"))
         self.call_limit = int(os.getenv("MSWEA_GLOBAL_CALL_LIMIT", "0"))
         if (self.cost_limit > 0 or self.call_limit > 0) and not os.getenv("MSWEA_SILENT_STARTUP"):
             print(f"Global cost/call limit: ${self.cost_limit:.4f} / {self.call_limit}")
 
-    def add(self, cost: float) -> None:
+    def add(
+        self,
+        cost: float,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        reasoning_tokens: int = 0,
+    ) -> None:
         """Add a model call with its cost, checking limits."""
         with self._lock:
             self._cost += cost
             self._n_calls += 1
+            self._input_tokens += input_tokens
+            self._output_tokens += output_tokens
+            self._reasoning_tokens += reasoning_tokens
         if 0 < self.cost_limit < self._cost or 0 < self.call_limit < self._n_calls + 1:
             raise RuntimeError(f"Global cost/call limit exceeded: ${self._cost:.4f} / {self._n_calls + 1}")
 
@@ -37,6 +49,22 @@ class GlobalModelStats:
     @property
     def n_calls(self) -> int:
         return self._n_calls
+
+    @property
+    def input_tokens(self) -> int:
+        return self._input_tokens
+
+    @property
+    def output_tokens(self) -> int:
+        return self._output_tokens
+
+    @property
+    def total_tokens(self) -> int:
+        return self._input_tokens + self._output_tokens
+
+    @property
+    def reasoning_tokens(self) -> int:
+        return self._reasoning_tokens
 
 
 GLOBAL_MODEL_STATS = GlobalModelStats()
